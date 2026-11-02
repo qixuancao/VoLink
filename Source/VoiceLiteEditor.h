@@ -17,7 +17,9 @@ namespace juce {
     METHOD(getVoiceEchoStatus, "getVoiceEchoStatus", "()Ljava/lang/String;") \
     METHOD(getMicrophoneRequested, "getMicrophoneRequested", "()Z") \
     METHOD(setMicrophoneRequested, "setMicrophoneRequested", "(Z)V") \
-    METHOD(onMicrophoneCaptureChanged, "onMicrophoneCaptureChanged", "(ZZ)V")
+    METHOD(onMicrophoneCaptureChanged, "onMicrophoneCaptureChanged", "(ZZ)V") \
+    METHOD(onVoiceDiagnostics, "onVoiceDiagnostics", "(IZZFFIJJ)V") \
+    METHOD(getVoiceDiagnostics, "getVoiceDiagnostics", "()Ljava/lang/String;")
 DECLARE_JNI_CLASS(VoiceLiteActivity, JUCE_ANDROID_ACTIVITY_OVERRIDE_CLASSPATH)
 #undef JNI_CLASS_MEMBERS
 }
@@ -175,5 +177,22 @@ private:
         connect.setButtonText(juce::String::fromUTF8(state == 1 ? "正在连接 · 点击取消" : state == 2 ? "断开连接" : "连接电脑"));
         mic.setEnabled(state == 2);
         updateMute();
+        auto& meter = processor.getInputMeterSource();
+        float peak = 0, rms = 0;
+        for (int channel = 0; channel < meter.getNumChannels(); ++channel) {
+            peak = juce::jmax(peak, meter.getMaxLevel(channel));
+            rms = juce::jmax(rms, meter.getRMSLevel(channel));
+        }
+        int peers = processor.getNumberRemotePeers();
+        int64_t tx = 0, rx = 0;
+        for (int i = 0; i < peers; ++i) {
+            tx += processor.getRemotePeerBytesSent(i);
+            rx += processor.getRemotePeerBytesReceived(i);
+        }
+        env->CallVoidMethod(activity.get(), juce::VoiceLiteActivity.onVoiceDiagnostics,
+            (jint) captureApplied, (jboolean) (muted || (pushToTalk.getToggleState() && !mic.isDown())),
+            (jboolean) pushToTalk.getToggleState(), (jfloat) peak, (jfloat) rms, (jint) peers, (jlong) tx, (jlong) rx);
+        juce::LocalRef<jstring> diagnostics((jstring)env->CallObjectMethod(activity.get(), juce::VoiceLiteActivity.getVoiceDiagnostics));
+        hint.setText(juce::juceString(diagnostics), juce::dontSendNotification);
     }
 };

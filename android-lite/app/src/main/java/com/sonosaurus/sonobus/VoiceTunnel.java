@@ -17,6 +17,7 @@ import java.util.Collections;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import javax.crypto.*;
 import javax.crypto.spec.GCMParameterSpec;
 import net.schmizz.sshj.SSHClient;
@@ -43,6 +44,7 @@ final class VoiceTunnel {
     private final SharedPreferences prefs;
     private final Context applicationContext;
     private final WeakReference<SonoBusActivity> activity;
+    final VoiceDiagnostics diagnostics;
     private volatile String password = "";
     private volatile Connection current;
     private long generation;
@@ -55,6 +57,7 @@ final class VoiceTunnel {
 
     VoiceTunnel(Context context) {
         applicationContext = context.getApplicationContext();
+        diagnostics = new VoiceDiagnostics(context);
         activity = new WeakReference<>((SonoBusActivity)context);
         prefs = context.getSharedPreferences("voice_connection", Context.MODE_PRIVATE);
         if (remembersPassword()) {
@@ -65,7 +68,19 @@ final class VoiceTunnel {
     private void updateState(int nextState, String nextMessage) {
         message = nextMessage;
         state = nextState;
+        diagnostics.event("connection_state", "state", nextState);
         VoiceConnectionTileService.notifyStateChanged();
+    }
+    void sampleTransport() {
+        Connection c = current;
+        if (c != null) diagnostics.event("transport", "state", state,
+            "tx_packets", c.txPackets.get(), "rx_packets", c.rxPackets.get(),
+            "tx_bytes", c.txBytes.get(), "rx_bytes", c.rxBytes.get(),
+            "heartbeats", c.heartbeats.get());
+    }
+    String packetSummary() {
+        Connection c = current;
+        return c == null ? "发 0 / 收 0 包" : "发 " + c.txPackets.get() + " / 收 " + c.rxPackets.get() + " 包";
     }
     String getHost() { return prefs.getString("host", ""); }
     int getPort() { return prefs.getInt("port", 22); }
@@ -302,12 +317,17 @@ final class VoiceTunnel {
         volatile String terminalMessage;
         volatile long connectedAtNanos;
         volatile InetSocketAddress peer;
+        final AtomicLong txPackets = new AtomicLong(), rxPackets = new AtomicLong();
+        final AtomicLong txBytes = new AtomicLong(), rxBytes = new AtomicLong(), heartbeats = new AtomicLong();
         Connection(String host, int port, String user, String pass) {
             this.host = host; this.port = port; this.user = user; this.pass = pass;
         }
         synchronized void close() {
             if (closed) return;
             closed = true;
+            if (current == this) diagnostics.uploading = false;
+            diagnostics.event("transport_closed", "tx_packets", txPackets.get(),
+                "rx_packets", rxPackets.get(), "tx_bytes", txBytes.get(), "rx_bytes", rxBytes.get());
             HostKeyRequest pending = hostKeyRequest;
             if (pending != null) {
                 pending.respond(false);
@@ -328,8 +348,46 @@ final class VoiceTunnel {
                 try { old.close(); } catch (IOException ignored) {}
             }, "voice-close").start();
         }
+        private void startDiagnostics(SSHClient client) {
+            new Thread(() -> {
+                while (!closed && current == this) {
+                    if (!diagnostics.enabled) {
+                        try { Thread.sleep(1000); } catch (InterruptedException e) { return; }
+                        continue;
+                    }
+                    String pending = null;
+                    try (Session logSession = client.startSession();
+                         Session.Command log = logSession.exec(diagnostics.receiverCommand())) {
+                        BufferedReader ready = new BufferedReader(new InputStreamReader(log.getInputStream(), "UTF-8"));
+                        if (!"VOLINK_DIAGNOSTICS_V1".equals(ready.readLine()))
+                            throw new IOException("diagnostics_receiver_unavailable");
+                        if (closed || current != this || !diagnostics.enabled) break;
+                        diagnostics.uploading = true; diagnostics.lastError = "";
+                        OutputStream output = log.getOutputStream();
+                        while (!closed && current == this && diagnostics.enabled) {
+                            pending = diagnostics.poll();
+                            if (pending == null) continue;
+                            if (closed || current != this || !diagnostics.enabled) break;
+                            output.write((pending + "\n").getBytes("UTF-8")); output.flush();
+                            pending = null;
+                            // Drain reconnect backlogs below the receiver's rate limit.
+                            Thread.sleep(60);
+                        }
+                    } catch (Exception e) {
+                        if (!closed && current == this)
+                            diagnostics.lastError = e.getClass().getSimpleName();
+                    } finally {
+                        if (current == this) diagnostics.uploading = false;
+                        diagnostics.retry(pending);
+                    }
+                    if (!closed && current == this) {
+                        try { Thread.sleep(5000); } catch (InterruptedException e) { return; }
+                    }
+                }
+            }, "voice-diagnostics").start();
+        }
         @Override public void run() {
-            String phase = "连接 SSH";
+            String phase = "ssh_connect";
             try (SSHClient client = new SSHClient()) {
                 ssh = client;
                 if (closed) return;
@@ -346,10 +404,11 @@ final class VoiceTunnel {
                 if (closed || current != this) return;
                 client.setTimeout(15000);
                 client.getSocket().setTcpNoDelay(true);
-                phase = "验证账号密码";
+                phase = "ssh_auth";
                 client.authPassword(user, pass);
                 if (closed || current != this) return;
-                phase = "启动电脑音频桥";
+                startDiagnostics(client);
+                phase = "bridge_start";
                 try (Session session = client.startSession();
                      Session.Command command = session.exec("if [ -x /usr/bin/sonobus-ssh-bridge ]; then bridge=/usr/bin/sonobus-ssh-bridge; else bridge=\"$HOME/.local/bin/sonobus-ssh-bridge\"; fi; if \"$bridge\" --supports-heartbeat >/dev/null 2>&1; then exec \"$bridge\" --stdio --heartbeat; else exec \"$bridge\" --stdio; fi");
                      DatagramSocket socket = new DatagramSocket(new InetSocketAddress("127.0.0.1", LOCAL_PORT))) {
@@ -369,10 +428,12 @@ final class VoiceTunnel {
                                 synchronized (output) {
                                     output.writeInt(packet.getLength());
                                     output.write(data, 0, packet.getLength()); output.flush();
+                                    txPackets.incrementAndGet(); txBytes.addAndGet(packet.getLength());
                                 }
                             }
                         } catch (IOException e) {
                             if (!closed && current == this) {
+                                diagnostics.event("transport_error", "phase", "udp_to_ssh", "error", e.getClass().getSimpleName());
                                 close();
                             }
                         }
@@ -384,7 +445,7 @@ final class VoiceTunnel {
                         catch (IOException ignored) {}
                     }, "voice-stderr").start();
                     if (!connectionReady(this)) return;
-                    phase = "音频传输";
+                    phase = "audio_transfer";
                     DataInputStream input = new DataInputStream(command.getInputStream());
                     boolean heartbeatStarted = false;
                     while (!closed) {
@@ -395,6 +456,7 @@ final class VoiceTunnel {
                                 try {
                                     while (!closed && current == this) {
                                         synchronized (output) { output.writeInt(0); output.flush(); }
+                                        heartbeats.incrementAndGet();
                                         Thread.sleep(10000);
                                     }
                                 } catch (IOException e) {
@@ -405,12 +467,14 @@ final class VoiceTunnel {
                         }
                         if (length <= 0 || length > MAX_PACKET) throw new IOException("invalid packet size");
                         byte[] data = new byte[length]; input.readFully(data);
+                        rxPackets.incrementAndGet(); rxBytes.addAndGet(length);
                         InetSocketAddress destination = peer;
                         if (destination != null) socket.send(new DatagramPacket(data, data.length, destination));
                     }
                 }
             } catch (Exception e) {
                 if (!closed && current == this) {
+                    diagnostics.event("transport_error", "phase", phase, "error", e.getClass().getSimpleName());
                     if (hostKeyRejected) terminalMessage = "服务器指纹已变化，连接已拒绝！请核实电脑的 SSH 密钥";
                     else if (e instanceof UserAuthException && e.getCause() == null)
                         terminalMessage = "SSH 用户名或密码错误，请检查设置";

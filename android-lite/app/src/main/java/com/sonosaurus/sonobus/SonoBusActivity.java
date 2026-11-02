@@ -9,6 +9,7 @@ import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.media.AudioManager;
+import android.media.AudioRecordingConfiguration;
 import android.media.audiofx.AcousticEchoCanceler;
 import android.media.audiofx.NoiseSuppressor;
 import android.os.*;
@@ -24,6 +25,9 @@ public class SonoBusActivity extends Activity {
     private native void appOnResume();
     private long cppCounterpartInstance;
     private VoiceTunnel tunnel;
+    private long lastDiagnosticSnapshot;
+    private volatile float inputPeak;
+    private volatile int recordingSession;
     private AudioManager audio;
     private boolean changedSpeakerphone;
     private AcousticEchoCanceler aec;
@@ -64,6 +68,7 @@ public class SonoBusActivity extends Activity {
         });
     }
     public void onMicrophoneCaptureChanged(boolean enabled, boolean success) {
+        tunnel.diagnostics.event("capture_changed", "capture", enabled, "success", success);
         if (!enabled && success) releaseVoiceEffects();
         if (!success) echoStatus = enabled ? "无法开启麦克风，请返回应用重试" : "无法释放麦克风，请断开连接";
         else if (!enabled) echoStatus = "麦克风已关闭并释放";
@@ -72,6 +77,43 @@ public class SonoBusActivity extends Activity {
         runOnUiThread(() -> {
             if (foregroundActive) startService(new Intent(this, SonoBusService.class));
         });
+    }
+    public void onVoiceDiagnostics(int capture, boolean muted, boolean ptt, float peak, float rms,
+                                   int peers, long tx, long rx) {
+        inputPeak = peak;
+        long now = android.os.SystemClock.elapsedRealtime();
+        if (now - lastDiagnosticSnapshot < 5000) return;
+        lastDiagnosticSnapshot = now;
+        tunnel.diagnostics.event("audio", "capture", capture, "muted", muted, "ptt", ptt,
+            "peak", peak, "rms", rms, "peers", peers, "native_tx_bytes", tx, "native_rx_bytes", rx,
+            "foreground", activityResumed, "requested", microphoneRequested,
+            "permission", checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED,
+            "system_mic_muted", audio.isMicrophoneMute());
+        tunnel.sampleTransport();
+        if (tunnel.diagnostics.enabled) {
+            try {
+                boolean found = false;
+                for (AudioRecordingConfiguration config : audio.getActiveRecordingConfigurations()) {
+                    if (recordingSession <= 0 || config.getClientAudioSessionId() != recordingSession) continue;
+                    found = true;
+                    tunnel.diagnostics.event("recording_status", "recording_session", recordingSession,
+                        "recording_active", true, "sample_rate", config.getClientFormat().getSampleRate(),
+                        "audio_source", config.getClientAudioSource(),
+                        "client_silenced", Build.VERSION.SDK_INT >= 29 ? (config.isClientSilenced() ? 1 : 0) : -1);
+                }
+                if (!found) tunnel.diagnostics.event("recording_status", "recording_session", recordingSession,
+                    "recording_active", false);
+            } catch (RuntimeException e) {
+                tunnel.diagnostics.event("diagnostics_error", "phase", "recording_status", "error", e.getClass().getSimpleName());
+            }
+        }
+    }
+    public String getVoiceDiagnostics() {
+        if (!tunnel.diagnostics.enabled) return "诊断日志已关闭";
+        String delivery = tunnel.diagnostics.uploading ? "日志已连接电脑" : "日志等待回传";
+        if (!tunnel.diagnostics.lastError.isEmpty()) delivery = "日志回传失败：" + tunnel.diagnostics.lastError;
+        return String.format(java.util.Locale.ROOT, "麦克风电平 %.1f%% · %s\n%s", inputPeak * 100,
+            tunnel.packetSummary(), delivery);
     }
 
     @Override public void onCreate(Bundle state) {
@@ -212,6 +254,12 @@ public class SonoBusActivity extends Activity {
             remember.setTextColor(Color.BLACK);
             remember.setButtonTintList(ColorStateList.valueOf(Color.BLACK));
             remember.setChecked(tunnel.remembersPassword()); box.addView(remember);
+            CheckBox diagnostics = new CheckBox(dialogContext);
+            diagnostics.setText("诊断日志自动回传电脑（不含录音和密码）");
+            diagnostics.setTextColor(Color.BLACK);
+            diagnostics.setChecked(tunnel.diagnostics.enabled);
+            diagnostics.setOnCheckedChangeListener((button, checked) -> tunnel.diagnostics.setEnabled(checked));
+            box.addView(diagnostics);
             if (!tunnel.getFingerprint().isEmpty()) {
                 Button clearTrust = new Button(dialogContext);
                 clearTrust.setText("清除已保存的电脑指纹");
@@ -263,6 +311,7 @@ public class SonoBusActivity extends Activity {
     // Called with the actual Oboe capture stream's allocated audio session ID.
     public synchronized void attachVoiceEffects(int session) {
         releaseVoiceEffects();
+        recordingSession = session;
         if (session <= 0) { echoStatus = "系统通话处理；可切换按住说话"; return; }
         try {
             if (AcousticEchoCanceler.isAvailable()) {
@@ -300,10 +349,12 @@ public class SonoBusActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         activityResumed = true;
+        tunnel.diagnostics.event("activity_resumed");
         connectFromTileIfRequested();
     }
     @Override protected void onPause() {
         activityResumed = false;
+        tunnel.diagnostics.event("activity_paused");
         if (hostKeyDialog != null) hostKeyDialog.cancel();
         super.onPause();
     }

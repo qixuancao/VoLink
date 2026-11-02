@@ -14,6 +14,37 @@ Add the **VoLink 连接** tile from Android Quick Settings to connect or disconn
 
 While a connection is active, VoLink retries after a network interruption or a change of the default network, including a VPN switch. A manual disconnect cancels retries. A rejected SSH host fingerprint or incorrect credentials stop retrying and require correction in settings. Reconnect works while the app and its foreground service remain running; Android may stop them under device-specific conditions. When both sides support heartbeats, the Linux bridge also exits after 45 seconds without a heartbeat, cleaning up a connection left behind by an abrupt network loss. Older bridges use the original protocol and rely on SSH to detect such disconnects. Recovery and a switch between emulator network types have been tested; a real VPN switch and device-specific power management have not.
 
+## Diagnostics (0.1.4)
+
+The app displays microphone level and transport packet counts. Diagnostics are
+enabled by default in this experimental version and can be disabled in Connection
+Settings. Every five seconds it reports capture/permission/mute state, foreground
+state, input level, native peer bytes, and SSH bridge packet counters.
+The matching Android recording session is also checked for active capture and,
+on Android 10+, whether the OS is silencing it. An absent session is reported as
+unmatched, not interpreted as proof that recording stopped. Connection
+changes and exception **class names** are also recorded. A microphone privacy
+indicator alone does not establish that audio reaches Linux.
+
+Metadata travels over a separate channel on the existing authenticated SSH
+connection. The bundled Python 3 receiver runs as the SSH user; no additional port,
+Linux package update, or administrator permission is needed. Files are stored at
+`~/.local/state/volink/diagnostics/android.jsonl` on that computer, with one rotated
+backup (at most approximately 2 MiB total), directory mode 0700 and file mode 0600.
+No audio samples, passwords, hostnames or full exception messages are sent.
+Before SSH authentication, up to 120 events are held in memory for the next
+connection; they are lost if the app is killed. Diagnostics channel failures do
+not close the audio channel. The main screen shows whether log forwarding is ready.
+
+```bash
+tail -n 40 ~/.local/state/volink/diagnostics/android.jsonl
+```
+
+Turn diagnostics off to stop new collection and forwarding. Existing log files
+remain on the Linux computer until removed or rotated. Packet counters measure
+transport traffic, including control packets; nonzero counters alone do not prove
+audible microphone input. Interpret them together with capture and level fields.
+
 ## Android build
 
 JDK 17, Android SDK 35, Build Tools 35.0.0, NDK 25.2.9519653 and CMake 3.22.1 are required. Opus 1.5.2 is built from the included source in `deps/opus`.
