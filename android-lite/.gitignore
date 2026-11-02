@@ -1,0 +1,5 @@
+.gradle/
+app/.cxx/
+local.properties
+*.jks
+*.p12

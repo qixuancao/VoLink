@@ -1,0 +1,64 @@
+plugins { id 'com.android.application' }
+
+def voiceSigningStore = System.getenv('VOICE_SIGNING_STORE')
+
+android {
+    namespace 'com.sonosaurus.sonobus'
+    compileSdk 35
+    buildToolsVersion '35.0.0'
+    ndkVersion '25.2.9519653'
+    defaultConfig {
+        applicationId (project.findProperty('voiceApplicationId') ?: 'com.sharkhome.codexvoice.open')
+        minSdk 26
+        targetSdk 35
+        versionCode 4
+        versionName '0.1.3'
+        ndk { abiFilters((project.findProperty('voiceAbi') ?: 'arm64-v8a').split(',') as String[]) }
+        externalNativeBuild {
+            cmake {
+                arguments '-DANDROID_STL=c++_static', '-DANDROID_CPP_FEATURES=exceptions rtti',
+                          '-DCMAKE_CXX_STANDARD=17', '-DJUCE_BUILD_CONFIGURATION=RELEASE'
+                cppFlags '-O2'
+            }
+        }
+    }
+    buildFeatures { buildConfig true }
+    signingConfigs {
+        if (voiceSigningStore) {
+            voiceRelease {
+                storeFile file(voiceSigningStore)
+                storePassword System.getenv('VOICE_SIGNING_PASSWORD')
+                keyAlias 'codex-voice'
+                keyPassword System.getenv('VOICE_SIGNING_PASSWORD')
+                storeType 'PKCS12'
+            }
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (voiceSigningStore) signingConfig signingConfigs.voiceRelease
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+        coreLibraryDesugaringEnabled true
+    }
+    externalNativeBuild { cmake { path 'CMakeLists.txt'; version '3.22.1' } }
+    sourceSets {
+        main {
+            java.srcDirs = ['src/main/java',
+                '../../deps/juce/modules/juce_core/native/javacore/init',
+                '../../deps/juce/modules/juce_core/native/javacore/app',
+                '../../deps/juce/modules/juce_gui_basics/native/javaopt/app']
+            res.srcDirs = ['../../mobile/Builds/Android/app/src/main/res', 'src/main/res']
+        }
+    }
+    packaging { resources.excludes += ['META-INF/DEPENDENCIES', 'META-INF/versions/**', 'META-INF/*.SF', 'META-INF/*.RSA', 'META-INF/*.DSA'] }
+}
+dependencies {
+    implementation 'com.hierynomus:sshj:0.40.0'
+    implementation 'org.bouncycastle:bcprov-jdk18on:1.80.2'
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.4'
+}

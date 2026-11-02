@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <uses-permission android:name="android.permission.INTERNET"/>
+  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+  <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+  <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
+  <uses-permission android:name="android.permission.WAKE_LOCK"/>
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
+  <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+  <application android:label="VoLink" android:name="com.rmsl.juce.JuceApp"
+    android:icon="@drawable/volink_icon" android:allowBackup="false"
+    android:theme="@android:style/Theme.Material.NoActionBar"
+    android:hardwareAccelerated="false" android:supportsRtl="true">
+    <service android:name="com.sonosaurus.sonobus.SonoBusService" android:enabled="true"
+      android:exported="false" android:foregroundServiceType="microphone|mediaPlayback"/>
+    <service android:name="com.sonosaurus.sonobus.VoiceConnectionTileService"
+      android:label="VoLink 连接" android:icon="@drawable/ic_connection"
+      android:exported="true" android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+      <intent-filter><action android:name="android.service.quicksettings.action.QS_TILE"/></intent-filter>
+      <meta-data android:name="android.service.quicksettings.TOGGLEABLE_TILE" android:value="true"/>
+    </service>
+    <activity android:name="com.sonosaurus.sonobus.SonoBusActivity" android:exported="true"
+      android:configChanges="keyboardHidden|orientation|screenSize" android:launchMode="singleTask"
+      android:windowSoftInputMode="adjustResize">
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN"/>
+        <category android:name="android.intent.category.LAUNCHER"/>
+      </intent-filter>
+    </activity>
+    <activity-alias android:name="com.sonosaurus.sonobus.VoiceTileEntry"
+      android:targetActivity="com.sonosaurus.sonobus.SonoBusActivity" android:exported="false"/>
+  </application>
+</manifest>

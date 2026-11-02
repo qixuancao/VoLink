@@ -1,0 +1,36 @@
+# Managed by android-linux-voice-bridge
+[Unit]
+Description=VoLink audio endpoint for the encrypted Android voice channel
+Requires=user@@UID@.service
+After=user@@UID@.service
+
+[Service]
+User=@USER@
+Environment=HOME=@HOME@/.local/state/android-linux-voice-bridge/server-home
+Environment=XDG_RUNTIME_DIR=/run/user/@UID@
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/@UID@/bus
+Environment=PULSE_SERVER=unix:/run/user/@UID@/pulse/native
+Environment=PULSE_SOURCE=android_voice_bridge_to_android.monitor
+Environment=PULSE_SINK=android_voice_bridge_from_android
+Environment=ALSA_CONFIG_PATH=@HOME@/.config/android-linux-voice-bridge/alsa.conf
+ExecStartPre=+/usr/lib/android-linux-voice-bridge/verify_firewall.py
+ExecStartPre=/usr/bin/systemctl --user start android-linux-voice-routing.service
+ExecStart=@SONOBUS@ --headless --group=local-ssh-only --connectionserver=127.0.0.1:10999 --username=Linux --load-setup=@HOME@/.config/android-linux-voice-bridge/voice.sonobus
+ExecStopPost=-/usr/bin/timeout 8s /usr/bin/systemctl --user stop android-linux-voice-routing.service
+Restart=on-failure
+RestartSec=3
+TimeoutStartSec=30s
+TimeoutStopSec=10s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=@HOME@/.local/state/android-linux-voice-bridge/server-home
+# SonoBus's UDP protocol has no encryption: only the SSH bridge on loopback
+# may reach it. The kernel enforces this independently of application settings.
+IPAddressDeny=any
+IPAddressAllow=localhost
+IPAccounting=yes
+
+[Install]
+WantedBy=multi-user.target

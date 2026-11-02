@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+unit=/etc/systemd/system/android-linux-voice-audio.service
+case "$1" in
+    remove|deconfigure)
+        if [ -e "$unit" ]; then
+            if ! grep -qx '# Managed by android-linux-voice-bridge' "$unit"; then
+                echo "Unrecognized service at $unit; refusing to remove it" >&2
+                exit 1
+            fi
+            if [ -d /run/systemd/system ]; then
+                systemctl disable --now android-linux-voice-audio.service
+            fi
+            rm "$unit"
+            if [ -d /run/systemd/system ]; then systemctl daemon-reload; fi
+        fi
+        ;;
+esac

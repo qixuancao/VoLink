@@ -1,0 +1,14 @@
+[Unit]
+Description=VoLink Android microphone and speaker routing
+After=pipewire-pulse.service pulseaudio.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/android-linux-voice-bridge/route_audio.py start
+ExecStopPost=/usr/lib/android-linux-voice-bridge/route_audio.py stop
+TimeoutStartSec=25s
+TimeoutStopSec=8s
+
+[Install]
+WantedBy=default.target

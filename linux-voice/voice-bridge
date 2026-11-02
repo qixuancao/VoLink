@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""Configure, inspect, or remove the experimental SSH audio bridge."""
+import argparse
+import os
+import pwd
+import shutil
+import socket
+import subprocess
+import sys
+from pathlib import Path
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('command', choices=('status', 'setup', 'activate', 'prepare-service', 'uninstall'))
+    parser.add_argument('--prepare-only', action='store_true', help='create configuration without starting services')
+    args = parser.parse_args()
+    if args.command == 'status':
+        bundled = Path(__file__).resolve().parent.parent / 'lib/android-linux-voice-bridge/sonobus'
+        print(f'sonobus: {bundled if bundled.is_file() else shutil.which("sonobus") or "not found"}')
+        for name in ('sonobus-ssh-bridge', 'pactl'):
+            print(f'{name}: {shutil.which(name) or "not found in PATH"}')
+        for scope, name in (([], 'android-linux-voice-audio.service'),
+                            (['--user'], 'android-linux-voice-routing.service')):
+            result = subprocess.run(['systemctl', *scope, 'is-active', name], text=True, capture_output=True, check=False)
+            print(f'{name}: {result.stdout.strip() or "unknown"}')
+        return
+    lib = Path(__file__).resolve().parent.parent / 'lib/android-linux-voice-bridge'
+    if args.command == 'uninstall':
+        unit = Path.home() / '.config/systemd/user/android-linux-voice-routing.service'
+        template = lib / 'codex-voice-routing.service'
+        if unit.exists() and unit.read_bytes() != template.read_bytes():
+            parser.error(f'{unit} was modified; refusing to remove it')
+        subprocess.run(['sudo', str(lib / 'install_system_service.py'), '--remove'], check=True)
+        unit.unlink(missing_ok=True)
+        subprocess.run(['systemctl', '--user', 'daemon-reload'], check=True)
+        print('Service removed. Configuration is preserved.')
+        return
+    if args.command == 'prepare-service':
+        subprocess.run([sys.executable, str(lib / 'render_units.py')], check=True)
+        return
+    config = Path.home() / '.config/android-linux-voice-bridge'
+    if args.command == 'setup':
+        if (config / 'voice.sonobus').exists() or (config / 'alsa.conf').exists():
+            parser.error(f'configuration already exists in {config}; use activate or remove it yourself')
+        subprocess.run([sys.executable, str(lib / 'generate_setup.py')], check=True)
+        print(f'Configuration created in {config}.')
+        if args.prepare_only:
+            print('Services were not installed or started.')
+            return
+    if args.prepare_only:
+        parser.error('--prepare-only is only valid with setup')
+    if not (config / 'voice.sonobus').is_file() or not (config / 'alsa.conf').is_file():
+        parser.error('configuration missing; run voice-bridge setup first')
+    if os.geteuid() == 0 or str(Path.home()) != pwd.getpwuid(os.getuid()).pw_dir:
+        parser.error('run as the desktop user with the normal home directory')
+    for verb in ('is-active', 'is-enabled'):
+        check = subprocess.run(['systemctl', verb, '--quiet', 'codex-voice-audio.service'], check=False)
+        if check.returncode == 0:
+            parser.error('an existing personal voice service is active or enabled; refusing to interfere')
+    bundled = lib / 'sonobus'
+    binary = str(bundled) if bundled.is_file() else shutil.which('sonobus')
+    if not binary:
+        parser.error('SonoBus not found; install it before activation, then run voice-bridge activate')
+    binary = str(Path(binary).resolve())
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        try:
+            sock.bind(('0.0.0.0', 12001))
+        except OSError:
+            parser.error('UDP port 12001 is already in use')
+    unit = Path.home() / '.config/systemd/user/android-linux-voice-routing.service'
+    unit.parent.mkdir(parents=True, exist_ok=True)
+    created_unit = False
+    try:
+        with unit.open('x') as file:
+            file.write((lib / 'codex-voice-routing.service').read_text())
+        created_unit = True
+    except FileExistsError:
+        if unit.read_bytes() != (lib / 'codex-voice-routing.service').read_bytes():
+            parser.error(f'{unit} was modified; refusing to overwrite it')
+    try:
+        (Path.home() / '.local/state/android-linux-voice-bridge/server-home').mkdir(parents=True, exist_ok=True)
+        subprocess.run(['systemctl', '--user', 'daemon-reload'], check=True)
+        subprocess.run(['sudo', str(lib / 'install_system_service.py'), binary], check=True)
+    except Exception:
+        if created_unit:
+            unit.unlink(missing_ok=True)
+        subprocess.run(['systemctl', '--user', 'daemon-reload'], check=False)
+        raise
+    print('Voice service installed and enabled for startup.')
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except subprocess.CalledProcessError:
+        raise SystemExit('voice-bridge: a required command failed; see the message above. Configuration is preserved.')
+    except OSError as exc:
+        raise SystemExit(f'voice-bridge: {exc}')
