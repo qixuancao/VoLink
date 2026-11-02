@@ -7,6 +7,8 @@ import sys
 import tempfile
 import unittest
 
+# The receiver lives in APK assets; importing it must not add a .pyc asset.
+sys.dont_write_bytecode = True
 SCRIPT = Path(__file__).resolve().parents[1] / 'android-lite/app/src/main/assets/voice_diagnostics_receiver.py'
 spec = importlib.util.spec_from_file_location('receiver', SCRIPT)
 receiver = importlib.util.module_from_spec(spec)
